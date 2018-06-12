@@ -1,0 +1,159 @@
+---
+title: "Topic Modeling in R"
+output:
+  html_document: default
+  html_notebook: default
+---
+## Useful links
+
+https://www.tidytextmining.com/ good book on text mining, dplyr and ggplot.  This tutorial is an adaptation of one of the case studies in the book.
+
+https://github.com/niderhoff/nlp-datasets list of data sets for NLP work.  The jokes dataset used herein came from this list.
+
+
+## Get the Raw Data
+```{r}
+library(rjson)
+library(dplyr)
+json_file = 'https://raw.githubusercontent.com/taivop/joke-dataset/master/wocka.json'
+jokes_json= fromJSON(file=json_file)
+jokes=bind_rows(lapply(jokes_json,function(j)data.frame(j)))
+
+#convert categories a factor varible
+jokes$category=as.factor(jokes$category)
+
+#grap the first 512 characters of the joke body
+jokes$body = substring(jokes$body,1,512)
+
+
+str(jokes)
+nrow(jokes)
+head(jokes)
+
+
+```
+
+## Tokenize the Joke Body
+
+```{r}
+library(tokenizers)
+
+all_words = tokenize_words(jokes$body)
+#all_words is a list of vectors, one for each joke
+
+# look at a particular joke
+joke = 40
+jokes[joke, ]
+all_words[[joke]]
+```
+
+```{r}
+
+# make a data frame with columns id and word encompassing all of jokes
+
+make_df <- function(id, wordlist) {
+    if (length(wordlist) >0) {
+        df = data.frame(jokeid=id,
+                        jokeword=substring(wordlist,1,24),
+                        stringsAsFactors=FALSE)
+    } else {
+        df = NULL
+    }
+    df
+}
+
+jokeids = jokes$id
+jokewords_df = bind_rows(
+    lapply(seq_along(jokeids),
+           function(j)make_df(jokeids[j],all_words[[j]]))) %>%
+    count(jokeid, jokeword) %>%
+    ungroup()
+
+tail(jokewords_df)
+
+```
+
+## Ditch the Stop Words
+
+```{r}
+library(tidytext)
+data("stop_words")
+head(stop_words)
+
+nrow(jokewords_df)
+jokewords_df = jokewords_df %>%
+    filter(grepl('\\D',jokeword)) %>% #ditch words that are just digits
+    anti_join(stop_words, by=c('jokeword'='word'))
+
+nrow(jokewords_df)
+```
+
+## Create a Document Term Matrix (DTM)
+
+```{r}
+jokes_dtm = jokewords_df %>%
+    cast_dtm(jokeid, jokeword, n)
+
+jokes_dtm
+```
+
+## Do the Latent Dirichlet Allocation (LDA)
+```{r}
+library(topicmodels)
+jokes_lda = LDA(jokes_dtm, k=6, control=list(seed=1234))
+```
+## Plot the top words in each Group
+
+```{r}
+library(ggplot2)
+
+jokes_lda %>%
+  tidy() %>%
+  group_by(topic) %>%
+  top_n(8, beta) %>%
+  ungroup() %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free_y") +
+  coord_flip()
+```
+
+## Top Jokes in Each Group
+```{r}
+library(reshape2)
+
+jokes_gamma = jokes_lda %>%
+    tidy(matrix='gamma') %>%
+    acast( document ~ topic,value.var = 'gamma')
+jokes_gamma[1:10,]
+```
+
+```{r}
+rowSums(jokes_gamma[1:10,])
+```
+
+```{r}
+# function to return top n jokes in a group
+get_jokes = function(gammas, grp, n=10){
+    #doc ids are the row names as strings
+    jids = as.integer(row.names(gammas))
+    #find the top n
+    o = order(gammas[,grp], decreasing = TRUE)
+    jids_top = jids[o[1:n]]
+    
+    jdf = filter(jokes, id %in% jids_top)
+    
+    return(jdf$body)
+    
+}
+
+```
+
+## Top 10 Jokes in Topic 5
+
+```{r}
+get_jokes(jokes_gamma,5)
+
+```
+
